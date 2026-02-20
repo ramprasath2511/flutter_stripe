@@ -4,7 +4,6 @@ import 'dart:ui_web' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/widgets.dart';
 import 'package:stripe_js/stripe_api.dart' as js;
 import 'package:stripe_js/stripe_js.dart' as js;
 import 'package:web/web.dart' as web;
@@ -32,7 +31,7 @@ class WebCardField extends StatefulWidget {
   })  : assert(constraints == null || constraints.debugAssertIsValid()),
         constraints = (width != null || height != null)
             ? constraints?.tighten(width: width, height: height) ??
-                BoxConstraints.tightFor(width: width, height: height)
+            BoxConstraints.tightFor(width: width, height: height)
             : constraints;
 
   final BoxConstraints? constraints;
@@ -45,6 +44,7 @@ class WebCardField extends StatefulWidget {
   final bool autofocus;
   final CardEditController controller;
   final bool dangerouslyUpdateFullCardDetails;
+
   @override
   WebStripeCardState createState() => WebStripeCardState();
 }
@@ -52,15 +52,37 @@ class WebCardField extends StatefulWidget {
 class WebStripeCardState extends State<WebCardField> with CardFieldContext {
   CardEditController get controller => widget.controller;
 
+  // Persistent div element (required for new Flutter Web engine)
+  final web.HTMLDivElement _divElement = web.HTMLDivElement()
+    ..id = 'card-element'
+    ..style.border = 'none';
+
+  // MutationObserver waits until the div is actually in the DOM
+  late final web.MutationObserver _mutationObserver = web.MutationObserver(
+    ((JSArray<web.MutationRecord> entries, web.MutationObserver observer) {
+      if (web.document.getElementById('card-element') != null) {
+        _mutationObserver.disconnect();
+        _initStripeElement();
+      }
+    }).toJS,
+  );
+
   @override
   void initState() {
+    // Register persistent view
     ui.platformViewRegistry.registerViewFactory(
       'stripe_card',
-      (int viewId) => web.HTMLDivElement()
-        ..id = 'card-element'
-        ..style.border = 'none',
+          (int viewId) => _divElement,
     );
-    initStripe();
+
+    attachController(controller);
+
+    // Observe DOM until the element is attached
+    _mutationObserver.observe(
+      web.document,
+      web.MutationObserverInit(childList: true, subtree: true),
+    );
+
     super.initState();
   }
 
@@ -68,40 +90,33 @@ class WebStripeCardState extends State<WebCardField> with CardFieldContext {
       WebStripe.element as js.CardPaymentElement?;
   set element(js.CardPaymentElement? value) => WebStripe.element = value;
 
-  void initStripe() {
-    attachController(controller);
-    WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-      if (!widget.dangerouslyUpdateFullCardDetails) {
-        if (kDebugMode &&
-            controller.details !=
-                const CardFieldInputDetails(complete: false)) {
-          dev.log('WARNING! Initial card data value has been ignored. \n'
-              '$kDebugPCIMessage');
-        }
-        WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-          updateCardDetails(
-            const CardFieldInputDetails(complete: false),
-            controller,
-          );
-          element = WebStripe.js
-              .elements(createElementOptions())
-              .createCard(createOptions())
-            ..mount('#card-element'.toJS)
-            ..onBlur(requestBlur)
-            ..onFocus(requestFocus)
-            ..onChange(onCardChanged);
-        });
+  // Called only when #card-element is actually in the DOM
+  void _initStripeElement() {
+    if (!widget.dangerouslyUpdateFullCardDetails) {
+      if (kDebugMode &&
+          controller.details !=
+              const CardFieldInputDetails(complete: false)) {
+        dev.log('WARNING! Initial card data value has been ignored. \n'
+            '$kDebugPCIMessage');
       }
-    });
+
+      updateCardDetails(
+        const CardFieldInputDetails(complete: false),
+        controller,
+      );
+
+      element = WebStripe.js
+          .elements(createElementOptions())
+          .createCard(createOptions())
+        ..mount('#card-element'.toJS)
+        ..onBlur(requestBlur)
+        ..onFocus(requestFocus)
+        ..onChange(onCardChanged);
+    }
   }
 
-  void requestBlur(response) {
-    _effectiveNode.unfocus();
-  }
-
-  void requestFocus(response) {
-    _effectiveNode.requestFocus();
-  }
+  void requestBlur(response) => _effectiveNode.unfocus();
+  void requestFocus(response) => _effectiveNode.requestFocus();
 
   void onCardChanged(js.CardElementChangeEvent response) {
     final value = response.value;
@@ -112,9 +127,9 @@ class WebStripeCardState extends State<WebCardField> with CardFieldContext {
       brand: response.brand,
       postalCode: postalCode,
     );
+
     widget.onCardChanged?.call(details);
     updateCardDetails(details, controller);
-    return;
   }
 
   final FocusNode _focusNode = FocusNode(debugLabel: 'CardField');
@@ -149,16 +164,15 @@ class WebStripeCardState extends State<WebCardField> with CardFieldContext {
     );
   }
 
-  String colorToCssString(Color color) {
-    return 'rgb(${color.r}, ${color.g}, ${color.b})';
-  }
+  String colorToCssString(Color color) =>
+      'rgb(${color.r}, ${color.g}, ${color.b})';
 
   js.CardElementOptions createOptions() {
     final textColor = widget.style?.textColor;
     return js.CardElementOptions(
       style: {
         'base': {
-          if (textColor != null) 'color': colorToCssString(textColor)
+          if (textColor != null) 'color': colorToCssString(textColor),
         }
       },
       hidePostalCode: !widget.enablePostalCode,
@@ -168,11 +182,10 @@ class WebStripeCardState extends State<WebCardField> with CardFieldContext {
   @override
   void didUpdateWidget(covariant WebCardField oldWidget) {
     if (widget.controller != oldWidget.controller) {
-      assert(!controller.hasCardField,
-          'CardEditController is already attached to a CardView');
       detachController(oldWidget.controller);
-      attachController(oldWidget.controller);
+      attachController(widget.controller);
     }
+
     if (widget.enablePostalCode != oldWidget.enablePostalCode ||
         widget.placeholder != oldWidget.placeholder ||
         widget.style != oldWidget.style) {
@@ -190,19 +203,11 @@ class WebStripeCardState extends State<WebCardField> with CardFieldContext {
   }
 
   @override
-  void blur() {
-    element?.blur();
-  }
-
+  void blur() => element?.blur();
   @override
-  void clear() {
-    element?.clear();
-  }
-
+  void clear() => element?.clear();
   @override
-  void focus() {
-    element?.focus();
-  }
+  void focus() => element?.focus();
 
   @override
   void dangerouslyUpdateCardDetails(CardFieldInputDetails details) {
